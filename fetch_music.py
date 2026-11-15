@@ -1,70 +1,79 @@
 import os
+import math
 import wave
 import struct
 import random
 import subprocess
-from datetime import datetime
-import numpy as np
+from datetime import datetime, timezone
 
 SAVE_DIR = "music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 SAMPLE_RATE = 44100
-BPM = random.choice([132, 136, 140, 144])
-DURATION_SEC = 45
+BPM = random.choice([132, 136, 140])
+DURATION_SEC = 30
 TOTAL_SAMPLES = SAMPLE_RATE * DURATION_SEC
 BEAT_SAMPLES = int(SAMPLE_RATE * 60 / BPM)
 STEP_SAMPLES = BEAT_SAMPLES // 4  # 16th notes
 
-t = np.linspace(0, DURATION_SEC, TOTAL_SAMPLES, endpoint=False)
-audio = np.zeros(TOTAL_SAMPLES, dtype=np.float64)
+# Precompute a single 909-style rave kick drum
+kick_len = int(SAMPLE_RATE * 0.25)
+kick_wave = []
+phase = 0.0
+for i in range(kick_len):
+    t = i / SAMPLE_RATE
+    freq = 48.0 + 135.0 * math.exp(-t * 28.0)
+    phase += 2.0 * math.pi * freq / SAMPLE_RATE
+    sample = math.sin(phase) * math.exp(-t * 11.0)
+    kick_wave.append(math.tanh(sample * 2.2) * 0.85)
 
-# 1. Punchy 4-on-the-floor Rave Kick Drum
-kick_len = int(SAMPLE_RATE * 0.28)
-kt = np.linspace(0, 0.28, kick_len, endpoint=False)
-kick_freq = 48 + 130 * np.exp(-kt * 28)
-kick_phase = 2 * np.pi * np.cumsum(kick_freq) / SAMPLE_RATE
-kick_wave = np.sin(kick_phase) * np.exp(-kt * 11)
-kick_wave = np.tanh(kick_wave * 2.2) * 0.85
+# Precompute an offbeat open hi-hat
+hat_len = int(SAMPLE_RATE * 0.12)
+hat_wave = []
+prev_noise = 0.0
+for i in range(hat_len):
+    t = i / SAMPLE_RATE
+    noise = random.uniform(-1.0, 1.0)
+    hp = noise - prev_noise
+    prev_noise = noise
+    hat_wave.append(hp * math.exp(-t * 26.0) * 0.28)
 
+# Generate a 16-step acid rave bassline pattern
+scale_freqs = [55.0, 65.41, 73.42, 82.41, 98.0, 110.0, 130.81]
+pattern = [random.choice(scale_freqs) * random.choice([1.0, 2.0]) for _ in range(16)]
+
+audio = [0.0] * TOTAL_SAMPLES
+
+# Layer 1: 4-on-the-floor kick
 for pos in range(0, TOTAL_SAMPLES - kick_len, BEAT_SAMPLES):
-    audio[pos:pos + kick_len] += kick_wave
+    for j in range(kick_len):
+        audio[pos + j] += kick_wave[j]
 
-# 2. Offbeat Rave Open Hi-Hat
-hat_len = int(SAMPLE_RATE * 0.14)
-ht = np.linspace(0, 0.14, hat_len, endpoint=False)
-rng = np.random.default_rng()
-noise = rng.uniform(-1, 1, hat_len)
-# Simple high-pass effect via first-order difference
-hp_noise = np.diff(noise, prepend=0)
-hat_wave = hp_noise * np.exp(-ht * 24) * 0.35
-
+# Layer 2: Offbeat hi-hat
 for pos in range(BEAT_SAMPLES // 2, TOTAL_SAMPLES - hat_len, BEAT_SAMPLES):
-    audio[pos:pos + hat_len] += hat_wave
+    for j in range(hat_len):
+        audio[pos + j] += hat_wave[j]
 
-# 3. Acid / Rave Synth Bassline (16-step pattern)
-scale_freqs = [55.0, 65.41, 73.42, 82.41, 98.0, 110.0, 130.81]  # A minor rave scale
-pattern = [random.choice(scale_freqs) * random.choice([1, 1, 2]) for _ in range(16)]
-
+# Layer 3: Acid synth bassline
 for step_idx in range(TOTAL_SAMPLES // STEP_SAMPLES):
     start = step_idx * STEP_SAMPLES
     end = min(start + STEP_SAMPLES, TOTAL_SAMPLES)
-    seg_len = end - start
-    st = np.linspace(0, seg_len / SAMPLE_RATE, seg_len, endpoint=False)
-
     freq = pattern[step_idx % 16]
-    # Sawtooth wave with resonant sweep
-    saw = 2.0 * ((st * freq) % 1.0) - 1.0
-    env = np.exp(-st * 9.0)
-    cutoff = 0.15 + 0.75 * np.exp(-st * 14.0)
-    synth = np.tanh(saw * (2.5 * cutoff)) * env * 0.45
-    audio[start:end] += synth
+    for i in range(start, end):
+        st = (i - start) / SAMPLE_RATE
+        saw = 2.0 * ((st * freq) % 1.0) - 1.0
+        env = math.exp(-st * 9.0)
+        cutoff = 0.2 + 0.75 * math.exp(-st * 14.0)
+        audio[i] += math.tanh(saw * (2.5 * cutoff)) * env * 0.42
 
-# Normalize to prevent clipping
-audio = audio / np.max(np.abs(audio)) * 0.9
-pcm = (audio * 32767).astype(np.int16)
+# Normalize audio to 16-bit PCM
+peak = max(abs(x) for x in audio) or 1.0
+scale = 32000.0 / peak
+pcm_bytes = bytearray()
+for sample in audio:
+    pcm_bytes.extend(struct.pack("<h", int(sample * scale)))
 
-timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 wav_path = os.path.join(SAVE_DIR, f"rave_{BPM}bpm_{timestamp}.wav")
 mp3_path = os.path.join(SAVE_DIR, f"rave_{BPM}bpm_{timestamp}.mp3")
 
@@ -72,9 +81,9 @@ with wave.open(wav_path, "w") as wf:
     wf.setnchannels(1)
     wf.setsampwidth(2)
     wf.setframerate(SAMPLE_RATE)
-    wf.writeframes(pcm.tobytes())
+    wf.writeframes(pcm_bytes)
 
-# Convert to MP3 if ffmpeg is installed on Ubuntu runner, otherwise keep WAV
+# Convert to MP3 using pre-installed ffmpeg
 if subprocess.run(["which", "ffmpeg"], capture_output=True).returncode == 0:
     subprocess.run(["ffmpeg", "-y", "-i", wav_path, "-b:a", "192k", mp3_path], check=True)
     os.remove(wav_path)
