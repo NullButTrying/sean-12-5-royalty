@@ -1,0 +1,24 @@
+name: Keep Repo Active
+
+on:
+  schedule:
+    # Runs on the 1st of every month at 03:00 GMT
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update timestamp
+        run: |
+          date -u > last-active.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@://github.com"
+          git add last-active.txt
+          git commit -m "Keep scheduled workflows active" || exit 0
+          git push

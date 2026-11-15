@@ -1,0 +1,137 @@
+name: 24-7 Caster Stream
+
+on:
+  schedule:
+    # Runs continuously in four 6-hour shifts every day
+    - cron: '0 0 * * *'
+    - cron: '0 6 * * *'
+    - cron: '0 12 * * *'
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: caster-radio-stream
+  cancel-in-progress: true
+
+jobs:
+  broadcast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Boot Caster.fm Streaming Server
+        env:
+          TOKEN: ${{ secrets.CASTER_PRIVATE_TOKEN }}
+        run: |
+          SUBDOMAIN="hub.cloud"
+          DOMAIN="caster.fm"
+          ENDPOINT="private/server/start"
+          URL="https://${SUBDOMAIN}.${DOMAIN}/${ENDPOINT}"
+          
+          echo "Checking/booting server at: $URL"
+          
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            -H "Accept: application/json" \
+            -H "Authorization: Bearer $TOKEN" \
+            "$URL")
+          
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+          
+          echo "HTTP Status: $http_code"
+          echo "Response: $body"
+          
+          if [ "$http_code" -eq 200 ]; then
+            echo "Server started successfully. Waiting 10s for Icecast to initialize..."
+            sleep 10
+          elif [ "$http_code" -eq 406 ]; then
+            echo "Server is already booted and running."
+          else
+            echo "Failed to start server."
+            exit 1
+          fi
+
+      - name: Download MP3s from Repo
+        uses: actions/checkout@v4
+
+      - name: Install Ezstream and FFmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ezstream ffmpeg
+
+      - name: Create Playlist & Config
+        run: |
+          find "$PWD" -type f -iname "*.mp3" > playlist.m3u
+          cat <<EOF > ezstream.xml
+          <?xml version="1.0" encoding="UTF-8"?>
+          <ezstream>
+            <servers>
+              <server>
+                <hostname>${{ secrets.CASTER_HOST }}</hostname>
+                <port>${{ secrets.CASTER_PORT }}</port>
+                <password>${{ secrets.CASTER_PASS }}</password>
+                <protocol>http</protocol>
+              </server>
+            </servers>
+            <streams>
+              <stream>
+                <mountpoint>/${{ secrets.CASTER_MOUNT }}</mountpoint>
+                <format>MP3</format>
+                <stream_name>Seán Radio</stream_name>
+                <stream_bitrate>96</stream_bitrate>
+              </stream>
+            </streams>
+            <intakes>
+              <intake>
+                <type>playlist</type>
+                <filename>playlist.m3u</filename>
+                <shuffle>No</shuffle>
+                <stream_once>No</stream_once>
+              </intake>
+            </intakes>
+            <decoders>
+              <decoder>
+                <name>FFmpeg-MP3</name>
+                <program>ffmpeg -loglevel error -i @T@ -f s16le -acodec pcm_s16le -ar 44100 -ac 2 -</program>
+                <file_ext>.mp3</file_ext>
+              </decoder>
+            </decoders>
+            <encoders>
+              <encoder>
+                <name>FFmpeg-96k</name>
+                <program>ffmpeg -loglevel error -f s16le -ar 44100 -ac 2 -i - -f mp3 -b:a 96k -</program>
+                <format>MP3</format>
+              </encoder>
+            </encoders>
+          </ezstream>
+          EOF
+
+      - name: Stream to Caster.fm (with 8AM & 2PM GMT Server Check)
+        env:
+          TOKEN: ${{ secrets.CASTER_PRIVATE_TOKEN }}
+        run: |
+          # Background watcher to ensure server is booted at 08:00 and 14:00 GMT
+          (
+            SUBDOMAIN="hub.cloud"
+            DOMAIN="caster.fm"
+            ENDPOINT="private/server/start"
+            URL="https://${SUBDOMAIN}.${DOMAIN}/${ENDPOINT}"
+            while true; do
+              current_hm=$(date -u +"%H:%M")
+              if [ "$current_hm" = "08:00" ] || [ "$current_hm" = "14:00" ]; then
+                echo "[$current_hm GMT] Verifying Caster.fm server status..."
+                curl -s -X POST \
+                  -H "Accept: application/json" \
+                  -H "Authorization: Bearer $TOKEN" \
+                  "$URL" > /dev/null
+                sleep 65
+              fi
+              sleep 20
+            done
+          ) &
+
+          while true; do
+            ezstream -c ezstream.xml || true
+            echo "Disconnected. Reconnecting in 10 seconds..."
+            sleep 10
+          done
