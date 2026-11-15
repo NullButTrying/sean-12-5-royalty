@@ -11,22 +11,35 @@ SAVE_DIR = "music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 api_url = "https://jamendo.com"
+headers = {
+    "User-Agent": "RaveMusicRepoBot/1.0",
+    "Accept": "application/json",
+}
 params = {
     "client_id": CLIENT_ID,
     "format": "json",
     "limit": 15,
-    "tags": "rave+techno",
+    "fuzzytags": "rave",
     "audioformat": "mp32",
     "order": "popularity_week",
     "include": "licenses",
 }
 
-response = requests.get(api_url, params=params, timeout=30)
-if response.status_code != 200:
-    print(f"Jamendo API failed (Status {response.status_code}): {response.text[:300]}")
+response = requests.get(api_url, params=params, headers=headers, timeout=30)
+
+try:
+    data = response.json()
+except Exception:
+    print(f"Jamendo returned non-JSON (Status {response.status_code}, Length {len(response.text)}):")
+    print(repr(response.text[:500]))
     sys.exit(1)
 
-data = response.json()
+# Check if Jamendo returned an API-level error message inside JSON
+header_info = data.get("headers", {})
+if header_info.get("status") == "failed":
+    print(f"Jamendo API error: {header_info.get('error_message')}")
+    sys.exit(1)
+
 results = data.get("results", [])
 print(f"Jamendo returned {len(results)} tracks.")
 
@@ -55,7 +68,7 @@ for track in results:
         continue
 
     print(f"Downloading: {safe_name}")
-    audio_resp = requests.get(download_url, timeout=60)
+    audio_resp = requests.get(download_url, headers=headers, timeout=60)
     if audio_resp.status_code == 200 and len(audio_resp.content) > 100_000:
         with open(filepath, "wb") as f:
             f.write(audio_resp.content)
