@@ -5,35 +5,40 @@ import requests
 SAVE_DIR = "music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# Wikimedia requires a descriptive User-Agent header with a project name/URL
+# Wikimedia strictly requires a User-Agent containing project info + a contact email
 headers = {
-    "User-Agent": "RaveMusicRepoUpdater/1.0 (https://github.com; automated-study-project)"
+    "User-Agent": "RaveMusicRepoUpdater/1.0 (https://github.com; sdfinnegan1@gmail.com)",
+    "Accept": "application/json",
 }
 
 api_url = "https://wikimedia.org"
 params = {
     "action": "query",
     "generator": "search",
-    "gsrsearch": "filetype:audio (techno OR rave OR electronic)",
+    "gsrsearch": "filetype:audio techno OR rave OR electronic",
     "gsrnamespace": 6,
     "gsrlimit": 20,
     "prop": "imageinfo",
     "iiprop": "url|size",
     "format": "json",
+    "formatversion": 2,
 }
 
 response = requests.get(api_url, params=params, headers=headers, timeout=30)
-if response.status_code != 200:
-    print(f"Wikimedia API error {response.status_code}: {response.text[:300]}")
+
+try:
+    data = response.json()
+except Exception:
+    print(f"Wikimedia returned non-JSON (Status {response.status_code}, Length {len(response.text)}):")
+    print(repr(response.text[:500]))
     sys.exit(1)
 
-data = response.json()
-pages = data.get("query", {}).get("pages", {})
+pages = data.get("query", {}).get("pages", [])
 print(f"Wikimedia returned {len(pages)} audio files.")
 
 downloaded_count = 0
 
-for page_id, page_data in pages.items():
+for page_data in pages:
     if downloaded_count >= 3:
         break
 
@@ -45,7 +50,7 @@ for page_id, page_data in pages.items():
     file_url = info_list[0].get("url", "")
     file_size = info_list[0].get("size", 0)
 
-    # Filter for files between 500 KB and 25 MB (safe for GitHub's 100 MB limit)
+    # Keep files between 500 KB and 25 MB (safe for GitHub's 100 MB limit)
     if not file_url or not (500_000 < file_size < 25_000_000):
         continue
 
