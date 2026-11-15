@@ -2,63 +2,65 @@ import os
 import sys
 import requests
 
+CLIENT_ID = os.environ.get("MUSIC_API_KEY", "").strip()
+if not CLIENT_ID:
+    print("Error: MUSIC_API_KEY (Jamendo Client ID) is missing.")
+    sys.exit(1)
+
 SAVE_DIR = "music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# Wikimedia Commons requires a descriptive User-Agent
-headers = {
-    "User-Agent": "RaveMusicRepoUpdater/1.0 (https://github.com; contact@example.com)"
-}
-
-api_url = "https://wikimedia.org"
+api_url = "https://jamendo.com"
 params = {
-    "action": "query",
-    "generator": "search",
-    "gsrsearch": "filetype:audio (techno OR rave OR electronic)",
-    "gsrnamespace": 6,  # File namespace
-    "gsrlimit": 15,
-    "prop": "imageinfo",
-    "iiprop": "url|size",
+    "client_id": CLIENT_ID,
     "format": "json",
+    "limit": 15,
+    "tags": "rave+techno",
+    "audioformat": "mp32",
+    "order": "popularity_week",
+    "include": "licenses",
 }
 
-response = requests.get(api_url, params=params, headers=headers, timeout=30)
+response = requests.get(api_url, params=params, timeout=30)
 if response.status_code != 200:
-    print(f"Wikimedia API error {response.status_code}: {response.text[:300]}")
+    print(f"Jamendo API failed (Status {response.status_code}): {response.text[:300]}")
     sys.exit(1)
 
-pages = response.json().get("query", {}).get("pages", {})
+data = response.json()
+results = data.get("results", [])
+print(f"Jamendo returned {len(results)} tracks.")
+
 downloaded_count = 0
 
-for page_id, page_data in pages.items():
+for track in results:
     if downloaded_count >= 3:
         break
 
-    title = page_data.get("title", "").replace("File:", "")
-    info_list = page_data.get("imageinfo", [])
-    if not info_list:
+    if not track.get("audiodownload_allowed", True):
         continue
 
-    file_url = info_list[0].get("url", "")
-    file_size = info_list[0].get("size", 0)
+    track_id = track["id"]
+    artist = track.get("artist_name", "Unknown")
+    title = track.get("name", "Track")
+    download_url = track.get("audiodownload") or track.get("audio")
 
-    # Keep files between 500 KB and 25 MB
-    if not file_url or not (500_000 < file_size < 25_000_000):
+    if not download_url:
         continue
 
-    safe_name = "".join(c for c in title if c.isalnum() or c in (" ", "-", "_", ".")).rstrip()
+    raw_name = f"{track_id}_{artist} - {title}.mp3"
+    safe_name = "".join(c for c in raw_name if c.isalnum() or c in (" ", "-", "_", ".")).rstrip()
     filepath = os.path.join(SAVE_DIR, safe_name)
 
     if os.path.exists(filepath):
         continue
 
-    print(f"Downloading: {file_url}")
-    audio_resp = requests.get(file_url, headers=headers, timeout=60)
-    if audio_resp.status_code == 200:
+    print(f"Downloading: {safe_name}")
+    audio_resp = requests.get(download_url, timeout=60)
+    if audio_resp.status_code == 200 and len(audio_resp.content) > 100_000:
         with open(filepath, "wb") as f:
             f.write(audio_resp.content)
         print(f"Saved: {filepath}")
         downloaded_count += 1
 
 if downloaded_count == 0:
-    print("No new tracks found on this run.")
+    print("No new downloadable tracks found on this run.")
