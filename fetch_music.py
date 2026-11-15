@@ -5,26 +5,32 @@ import requests
 SAVE_DIR = "music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-search_url = "https://archive.org"
-params = {
-    "q": 'mediatype:audio AND (subject:rave OR subject:techno) AND (licenseurl:*creativecommons* OR licenseurl:*publicdomain*)',
-    "fields": "identifier,title",
-    "count": 15,
+# Internet Archive requires a descriptive User-Agent with contact info to avoid blocks
+headers = {
+    "User-Agent": "RaveMusicGitHubRepo/1.0 (https://github.com; contact@example.com)",
+    "Accept": "application/json",
 }
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (compatible; RaveMusicRepoUpdater/1.0; +https://github.com)",
-    "Accept": "application/json",
+search_url = "https://archive.org"
+params = {
+    "q": "mediatype:audio AND (rave OR techno) AND licenseurl:creativecommons",
+    "fl[]": ["identifier", "title"],
+    "rows": 15,
+    "page": 1,
+    "output": "json",
 }
 
 response = requests.get(search_url, params=params, headers=headers, timeout=30)
 
-if response.status_code != 200 or not response.text.strip():
-    print(f"Search failed (Status {response.status_code}): {response.text[:300]}")
+try:
+    data = response.json()
+except Exception:
+    print(f"Archive.org returned non-JSON (Status {response.status_code}):")
+    print(repr(response.text[:500]))
     sys.exit(1)
 
-items = response.json().get("items", [])
-print(f"Found {len(items)} candidate collections.")
+items = data.get("response", {}).get("docs", [])
+print(f"Found {len(items)} candidate items.")
 downloaded_count = 0
 
 for item in items:
@@ -34,11 +40,13 @@ for item in items:
     identifier = item["identifier"]
     meta_url = f"https://archive.org{identifier}"
     meta_resp = requests.get(meta_url, headers=headers, timeout=30)
-    if meta_resp.status_code != 200:
+
+    try:
+        meta_data = meta_resp.json()
+    except Exception:
         continue
 
-    files = meta_resp.json().get("files", [])
-    for file_info in files:
+    for file_info in meta_data.get("files", []):
         name = file_info.get("name", "")
         try:
             size = int(file_info.get("size", 0))
