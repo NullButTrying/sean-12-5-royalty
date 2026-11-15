@@ -5,71 +5,60 @@ import requests
 SAVE_DIR = "music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# Internet Archive requires a descriptive User-Agent with contact info to avoid blocks
+# Wikimedia Commons requires a descriptive User-Agent
 headers = {
-    "User-Agent": "RaveMusicGitHubRepo/1.0 (https://github.com; contact@example.com)",
-    "Accept": "application/json",
+    "User-Agent": "RaveMusicRepoUpdater/1.0 (https://github.com; contact@example.com)"
 }
 
-search_url = "https://archive.org"
+api_url = "https://wikimedia.org"
 params = {
-    "q": "mediatype:audio AND (rave OR techno) AND licenseurl:creativecommons",
-    "fl[]": ["identifier", "title"],
-    "rows": 15,
-    "page": 1,
-    "output": "json",
+    "action": "query",
+    "generator": "search",
+    "gsrsearch": "filetype:audio (techno OR rave OR electronic)",
+    "gsrnamespace": 6,  # File namespace
+    "gsrlimit": 15,
+    "prop": "imageinfo",
+    "iiprop": "url|size",
+    "format": "json",
 }
 
-response = requests.get(search_url, params=params, headers=headers, timeout=30)
-
-try:
-    data = response.json()
-except Exception:
-    print(f"Archive.org returned non-JSON (Status {response.status_code}):")
-    print(repr(response.text[:500]))
+response = requests.get(api_url, params=params, headers=headers, timeout=30)
+if response.status_code != 200:
+    print(f"Wikimedia API error {response.status_code}: {response.text[:300]}")
     sys.exit(1)
 
-items = data.get("response", {}).get("docs", [])
-print(f"Found {len(items)} candidate items.")
+pages = response.json().get("query", {}).get("pages", {})
 downloaded_count = 0
 
-for item in items:
+for page_id, page_data in pages.items():
     if downloaded_count >= 3:
         break
 
-    identifier = item["identifier"]
-    meta_url = f"https://archive.org{identifier}"
-    meta_resp = requests.get(meta_url, headers=headers, timeout=30)
-
-    try:
-        meta_data = meta_resp.json()
-    except Exception:
+    title = page_data.get("title", "").replace("File:", "")
+    info_list = page_data.get("imageinfo", [])
+    if not info_list:
         continue
 
-    for file_info in meta_data.get("files", []):
-        name = file_info.get("name", "")
-        try:
-            size = int(file_info.get("size", 0))
-        except ValueError:
-            size = 0
+    file_url = info_list[0].get("url", "")
+    file_size = info_list[0].get("size", 0)
 
-        if name.lower().endswith(".mp3") and 1_000_000 < size < 25_000_000:
-            safe_name = "".join(c for c in name if c.isalnum() or c in (" ", "-", "_", ".")).rstrip()
-            filepath = f"{SAVE_DIR}/{identifier}_{safe_name}"
+    # Keep files between 500 KB and 25 MB
+    if not file_url or not (500_000 < file_size < 25_000_000):
+        continue
 
-            if os.path.exists(filepath):
-                continue
+    safe_name = "".join(c for c in title if c.isalnum() or c in (" ", "-", "_", ".")).rstrip()
+    filepath = os.path.join(SAVE_DIR, safe_name)
 
-            download_url = f"https://archive.org{identifier}/{name}"
-            print(f"Downloading: {download_url}")
-            audio_resp = requests.get(download_url, headers=headers, timeout=60)
+    if os.path.exists(filepath):
+        continue
 
-            if audio_resp.status_code == 200:
-                with open(filepath, "wb") as f:
-                    f.write(audio_resp.content)
-                print(f"Saved: {filepath}")
-                downloaded_count += 1
-                break
+    print(f"Downloading: {file_url}")
+    audio_resp = requests.get(file_url, headers=headers, timeout=60)
+    if audio_resp.status_code == 200:
+        with open(filepath, "wb") as f:
+            f.write(audio_resp.content)
+        print(f"Saved: {filepath}")
+        downloaded_count += 1
 
 if downloaded_count == 0:
-    print("No new matching MP3 files were downloaded on this run.")
+    print("No new tracks found on this run.")
