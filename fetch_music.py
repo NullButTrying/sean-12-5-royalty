@@ -12,21 +12,24 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 
 url = "https://freesound.org"
 headers = {
-    "User-Agent": "Mozilla/5.0 (compatible; RaveMusicBot/1.0)",
-    "Authorization": f"Token {API_KEY}",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json",
 }
 params = {
     "query": "rave",
     "filter": "duration:[30 TO 300]",
     "fields": "id,name,previews,license",
     "page_size": 3,
+    "token": API_KEY,
+    "format": "json",
 }
 
 response = requests.get(url, headers=headers, params=params)
 
-if response.status_code != 200:
-    print(f"Freesound API failed with status {response.status_code}:")
-    print(response.text[:500])
+content_type = response.headers.get("Content-Type", "")
+if response.status_code != 200 or "application/json" not in content_type:
+    print(f"Unexpected response (Status {response.status_code}, Content-Type: {content_type}):")
+    print(response.text[:600])
     sys.exit(1)
 
 data = response.json()
