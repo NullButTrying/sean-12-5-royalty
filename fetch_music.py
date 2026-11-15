@@ -5,7 +5,6 @@ import requests
 SAVE_DIR = "music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# Use Internet Archive's official Scrape API designed for automated scripts
 search_url = "https://archive.org"
 params = {
     "q": 'mediatype:audio AND (subject:rave OR subject:techno) AND (licenseurl:*creativecommons* OR licenseurl:*publicdomain*)',
@@ -46,7 +45,6 @@ for item in items:
         except ValueError:
             size = 0
 
-        # Pick MP3 files between 1 MB and 25 MB
         if name.lower().endswith(".mp3") and 1_000_000 < size < 25_000_000:
             safe_name = "".join(c for c in name if c.isalnum() or c in (" ", "-", "_", ".")).rstrip()
             filepath = f"{SAVE_DIR}/{identifier}_{safe_name}"
