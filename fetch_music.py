@@ -1,50 +1,57 @@
 import os
-import sys
 import requests
-
-API_KEY = os.environ.get("MUSIC_API_KEY", "").strip()
-if not API_KEY:
-    print("Error: MUSIC_API_KEY environment variable is empty.")
-    sys.exit(1)
 
 SAVE_DIR = "music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-url = "https://freesound.org"
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "application/json",
-}
+# Search Internet Archive for Creative Commons / Public Domain rave audio
+search_url = "https://archive.org"
 params = {
-    "query": "rave",
-    "filter": "duration:[30 TO 300]",
-    "fields": "id,name,previews,license",
-    "page_size": 3,
-    "token": API_KEY,
-    "format": "json",
+    "q": 'subject:(rave OR techno) AND mediatype:(audio) AND licenseurl:(*creativecommons* OR *publicdomain*)',
+    "fl[]": ["identifier", "title"],
+    "sort[]": "downloads desc",
+    "rows": 10,
+    "page": 1,
+    "output": "json",
 }
 
-response = requests.get(url, headers=headers, params=params)
+headers = {"User-Agent": "GitHubActionsRaveMusicBot/1.0"}
+response = requests.get(search_url, params=params, headers=headers)
+response.raise_for_status()
 
-content_type = response.headers.get("Content-Type", "")
-if response.status_code != 200 or "application/json" not in content_type:
-    print(f"Unexpected response (Status {response.status_code}, Content-Type: {content_type}):")
-    print(response.text[:600])
-    sys.exit(1)
+items = response.json().get("response", {}).get("docs", [])
+downloaded_count = 0
 
-data = response.json()
+for item in items:
+    if downloaded_count >= 3:
+        break
 
-for track in data.get("results", []):
-    track_id = track["id"]
-    safe_name = "".join(c for c in track["name"] if c.isalnum() or c in (" ", "-", "_")).rstrip()
-    filename = f"{SAVE_DIR}/{track_id}_{safe_name}.mp3"
-    
-    if os.path.exists(filename):
+    identifier = item["identifier"]
+    meta_url = f"https://archive.org{identifier}"
+    meta_resp = requests.get(meta_url, headers=headers)
+    if meta_resp.status_code != 200:
         continue
-        
-    audio_url = track["previews"]["preview-hq-mp3"]
-    audio_data = requests.get(audio_url, headers=headers).content
-    
-    with open(filename, "wb") as f:
-        f.write(audio_data)
-    print(f"Downloaded: {filename}")
+
+    files = meta_resp.json().get("files", [])
+    for file_info in files:
+        name = file_info.get("name", "")
+        size = int(file_info.get("size", 0))
+
+        # Look for MP3 files between 1 MB and 25 MB (safe for GitHub's 100 MB limit)
+        if name.lower().endswith(".mp3") and 1_000_000 < size < 25_000_000:
+            safe_name = "".join(c for c in name if c.isalnum() or c in (" ", "-", "_", ".")).rstrip()
+            filepath = f"{SAVE_DIR}/{identifier}_{safe_name}"
+
+            if os.path.exists(filepath):
+                continue
+
+            download_url = f"https://archive.org{identifier}/{name}"
+            print(f"Downloading: {download_url}")
+            audio_resp = requests.get(download_url, headers=headers)
+
+            if audio_resp.status_code == 200:
+                with open(filepath, "wb") as f:
+                    f.write(audio_resp.content)
+                print(f"Saved: {filepath}")
+                downloaded_count += 1
+                break
