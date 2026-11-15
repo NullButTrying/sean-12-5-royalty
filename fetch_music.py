@@ -1,72 +1,83 @@
 import os
-import sys
-import requests
+import wave
+import struct
+import random
+import subprocess
+from datetime import datetime
+import numpy as np
 
 SAVE_DIR = "music"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# Wikimedia strictly requires a User-Agent containing project info + a contact email
-headers = {
-    "User-Agent": "RaveMusicRepoUpdater/1.0 (https://github.com; sdfinnegan1@gmail.com)",
-    "Accept": "application/json",
-}
+SAMPLE_RATE = 44100
+BPM = random.choice([132, 136, 140, 144])
+DURATION_SEC = 45
+TOTAL_SAMPLES = SAMPLE_RATE * DURATION_SEC
+BEAT_SAMPLES = int(SAMPLE_RATE * 60 / BPM)
+STEP_SAMPLES = BEAT_SAMPLES // 4  # 16th notes
 
-api_url = "https://wikimedia.org"
-params = {
-    "action": "query",
-    "generator": "search",
-    "gsrsearch": "filetype:audio techno OR rave OR electronic",
-    "gsrnamespace": 6,
-    "gsrlimit": 20,
-    "prop": "imageinfo",
-    "iiprop": "url|size",
-    "format": "json",
-    "formatversion": 2,
-}
+t = np.linspace(0, DURATION_SEC, TOTAL_SAMPLES, endpoint=False)
+audio = np.zeros(TOTAL_SAMPLES, dtype=np.float64)
 
-response = requests.get(api_url, params=params, headers=headers, timeout=30)
+# 1. Punchy 4-on-the-floor Rave Kick Drum
+kick_len = int(SAMPLE_RATE * 0.28)
+kt = np.linspace(0, 0.28, kick_len, endpoint=False)
+kick_freq = 48 + 130 * np.exp(-kt * 28)
+kick_phase = 2 * np.pi * np.cumsum(kick_freq) / SAMPLE_RATE
+kick_wave = np.sin(kick_phase) * np.exp(-kt * 11)
+kick_wave = np.tanh(kick_wave * 2.2) * 0.85
 
-try:
-    data = response.json()
-except Exception:
-    print(f"Wikimedia returned non-JSON (Status {response.status_code}, Length {len(response.text)}):")
-    print(repr(response.text[:500]))
-    sys.exit(1)
+for pos in range(0, TOTAL_SAMPLES - kick_len, BEAT_SAMPLES):
+    audio[pos:pos + kick_len] += kick_wave
 
-pages = data.get("query", {}).get("pages", [])
-print(f"Wikimedia returned {len(pages)} audio files.")
+# 2. Offbeat Rave Open Hi-Hat
+hat_len = int(SAMPLE_RATE * 0.14)
+ht = np.linspace(0, 0.14, hat_len, endpoint=False)
+rng = np.random.default_rng()
+noise = rng.uniform(-1, 1, hat_len)
+# Simple high-pass effect via first-order difference
+hp_noise = np.diff(noise, prepend=0)
+hat_wave = hp_noise * np.exp(-ht * 24) * 0.35
 
-downloaded_count = 0
+for pos in range(BEAT_SAMPLES // 2, TOTAL_SAMPLES - hat_len, BEAT_SAMPLES):
+    audio[pos:pos + hat_len] += hat_wave
 
-for page_data in pages:
-    if downloaded_count >= 3:
-        break
+# 3. Acid / Rave Synth Bassline (16-step pattern)
+scale_freqs = [55.0, 65.41, 73.42, 82.41, 98.0, 110.0, 130.81]  # A minor rave scale
+pattern = [random.choice(scale_freqs) * random.choice([1, 1, 2]) for _ in range(16)]
 
-    title = page_data.get("title", "").replace("File:", "")
-    info_list = page_data.get("imageinfo", [])
-    if not info_list:
-        continue
+for step_idx in range(TOTAL_SAMPLES // STEP_SAMPLES):
+    start = step_idx * STEP_SAMPLES
+    end = min(start + STEP_SAMPLES, TOTAL_SAMPLES)
+    seg_len = end - start
+    st = np.linspace(0, seg_len / SAMPLE_RATE, seg_len, endpoint=False)
 
-    file_url = info_list[0].get("url", "")
-    file_size = info_list[0].get("size", 0)
+    freq = pattern[step_idx % 16]
+    # Sawtooth wave with resonant sweep
+    saw = 2.0 * ((st * freq) % 1.0) - 1.0
+    env = np.exp(-st * 9.0)
+    cutoff = 0.15 + 0.75 * np.exp(-st * 14.0)
+    synth = np.tanh(saw * (2.5 * cutoff)) * env * 0.45
+    audio[start:end] += synth
 
-    # Keep files between 500 KB and 25 MB (safe for GitHub's 100 MB limit)
-    if not file_url or not (500_000 < file_size < 25_000_000):
-        continue
+# Normalize to prevent clipping
+audio = audio / np.max(np.abs(audio)) * 0.9
+pcm = (audio * 32767).astype(np.int16)
 
-    safe_name = "".join(c for c in title if c.isalnum() or c in (" ", "-", "_", ".")).rstrip()
-    filepath = os.path.join(SAVE_DIR, safe_name)
+timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+wav_path = os.path.join(SAVE_DIR, f"rave_{BPM}bpm_{timestamp}.wav")
+mp3_path = os.path.join(SAVE_DIR, f"rave_{BPM}bpm_{timestamp}.mp3")
 
-    if os.path.exists(filepath):
-        continue
+with wave.open(wav_path, "w") as wf:
+    wf.setnchannels(1)
+    wf.setsampwidth(2)
+    wf.setframerate(SAMPLE_RATE)
+    wf.writeframes(pcm.tobytes())
 
-    print(f"Downloading: {safe_name}")
-    audio_resp = requests.get(file_url, headers=headers, timeout=60)
-    if audio_resp.status_code == 200:
-        with open(filepath, "wb") as f:
-            f.write(audio_resp.content)
-        print(f"Saved: {filepath}")
-        downloaded_count += 1
-
-if downloaded_count == 0:
-    print("No new tracks downloaded on this run.")
+# Convert to MP3 if ffmpeg is installed on Ubuntu runner, otherwise keep WAV
+if subprocess.run(["which", "ffmpeg"], capture_output=True).returncode == 0:
+    subprocess.run(["ffmpeg", "-y", "-i", wav_path, "-b:a", "192k", mp3_path], check=True)
+    os.remove(wav_path)
+    print(f"Generated rave track: {mp3_path}")
+else:
+    print(f"Generated rave track: {wav_path}")
